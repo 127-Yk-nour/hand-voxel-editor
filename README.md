@@ -2,7 +2,8 @@
 
 Draw 3D voxel shapes in the air with your hands. Everything runs in your browser: the camera image never leaves your device.
 
-**Live demo:** https://zemouli-yakout.github.io/hand-voxel-editor/
+**Live demo:** https://127-yk-nour.github.io/hand-voxel-editor/
+
 
 ## How to use
 - 🤏 Pinch (thumb + index) and drag: draw cubes
