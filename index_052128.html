@@ -1,0 +1,1580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>Hand Voxel Editor</title>
+
+<!-- on-screen error box (phones / kiosks have no dev-tools) -->
+<script>
+  function showErr(m) {
+    var b = document.getElementById("err");
+    if (b) { b.style.display = "block"; b.textContent += m + "\n"; }
+  }
+  window.addEventListener("error", function (e) {
+    showErr(e.message || ("failed to load: " + ((e.target && (e.target.src || e.target.href)) || "a script")));
+  }, true);
+  window.addEventListener("unhandledrejection", function (e) { showErr(String(e.reason)); });
+</script>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+
+<style>
+  :root { --accent: #19e6cf; --bg: rgba(0,0,0,.55); }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, Tahoma, sans-serif;
+    user-select: none; -webkit-user-select: none; touch-action: none; overscroll-behavior: none; }
+
+  #video, #three, #overlay { position: fixed; inset: 0; width: 100%; height: 100%; }
+  #video { object-fit: cover; z-index: 1; background: #000; }
+  #video.mirror { transform: scaleX(-1); }
+  body:not(.expert) #video { filter: brightness(.6); }          /* exhibition: calmer background, cubes pop */
+  #three { z-index: 2; pointer-events: none; }
+  #overlay { z-index: 3; pointer-events: none; }
+  #frame { position: fixed; inset: 0; z-index: 4; pointer-events: none; transition: box-shadow .2s; }
+  body.erasing #frame { box-shadow: inset 0 0 0 10px rgba(255,64,64,.9); }
+  #flash { position: fixed; inset: 0; z-index: 28; background: #fff; opacity: 0; pointer-events: none; transition: opacity .35s; }
+  #flash.on { opacity: .85; transition: none; }
+
+  .pill { background: var(--bg); border: 1px solid rgba(255,255,255,.18); border-radius: 12px;
+    padding: 6px 10px; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+
+  #top { position: fixed; z-index: 10; top: calc(env(safe-area-inset-top) + 8px); left: 8px; right: 8px;
+    display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; pointer-events: none; }
+  #stats { font-size: 12px; line-height: 1.5; }
+  #gesture { font-weight: 700; color: var(--accent); letter-spacing: .4px; }
+  #staff { display: flex; gap: 6px; pointer-events: auto; margin-left: auto; opacity: .45; }
+  body.expert #staff { opacity: 1; }
+  #staff button { min-height: 36px; padding: 6px 10px; }
+
+  button { font: inherit; color: #fff; background: var(--bg); border: 1px solid rgba(255,255,255,.25);
+    border-radius: 12px; padding: 10px 12px; min-height: 42px;
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  button:active { transform: scale(.96); }
+  button:disabled { opacity: .5; }
+  button.active { background: var(--accent); color: #00201c; border-color: #fff; font-weight: 700; }
+  button.danger { border-color: rgba(255,90,90,.7); }
+
+  /* big, air-clickable buttons */
+  #bar { position: fixed; z-index: 10; left: 8px; right: 8px; bottom: calc(env(safe-area-inset-bottom) + 10px);
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+  #bar button { min-width: 66px; min-height: 70px; padding: 6px 8px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 2px; font-size: 12px; transition: transform .12s, box-shadow .12s; }
+  #bar .ico { font-size: 28px; line-height: 1; }
+  #bar button.hot { transform: scale(1.14); border-color: #fff; box-shadow: 0 0 0 4px rgba(25,230,207,.85); }
+  #bar button.pressed { background: #fff; color: #000; }
+  #bar button.armed { background: #ff5050; border-color: #fff; }
+  #bar #btnSize { display: none; }
+  body.expert #bar #btnSize { display: flex; }
+
+  .expert-only { display: none; }
+  body.expert #stats { display: block; }
+  body.expert #legend { display: block; }
+
+  #legend { position: fixed; z-index: 9; left: 50%; transform: translateX(-50%); white-space: nowrap;
+    bottom: calc(env(safe-area-inset-bottom) + 92px); font-size: 11px; padding: 4px 10px; opacity: .85; }
+
+  #coach { position: fixed; z-index: 12; left: 50%; top: calc(env(safe-area-inset-top) + 56px); transform: translateX(-50%);
+    min-width: 260px; max-width: calc(100% - 24px); text-align: center; padding: 12px 18px; border-radius: 16px;
+    background: rgba(0,0,0,.62); border: 1px solid rgba(255,255,255,.3); pointer-events: none; }
+  #coachText { font-size: 20px; font-weight: 700; }
+  #coachDots { margin-top: 4px; letter-spacing: 6px; color: var(--accent); }
+  #coach.ok { background: rgba(25,230,207,.9); color: #00201c; border-color: #fff; }
+  #coach.ok #coachDots { color: #00201c; }
+
+  #dist { position: fixed; z-index: 12; left: 50%; top: 42%; transform: translateX(-50%); padding: 10px 18px; border-radius: 14px;
+    background: rgba(255,176,32,.92); color: #201400; font-size: 20px; font-weight: 700; pointer-events: none; }
+
+  #attract { position: fixed; z-index: 11; left: 0; right: 0; bottom: 140px; text-align: center; padding: 0 16px; pointer-events: none; }
+  #attractTitle { font-size: 26px; font-weight: 800; text-shadow: 0 2px 10px #000; }
+  #attractCap { margin-top: 6px; font-size: 20px; font-weight: 700; color: var(--accent); text-shadow: 0 2px 10px #000; }
+
+  #hint { position: fixed; z-index: 12; left: 50%; top: 42%; transform: translate(-50%, -50%); text-align: center;
+    font-size: 22px; font-weight: 700; padding: 14px 20px; border-radius: 16px; background: rgba(0,0,0,.55);
+    border: 1px solid rgba(255,255,255,.25); pointer-events: none; }
+  #hint small { display: block; margin-top: 4px; font-size: 14px; font-weight: 400; opacity: .9; }
+
+  #toast { position: fixed; z-index: 25; left: 50%; top: 110px; transform: translateX(-50%); padding: 8px 14px;
+    border-radius: 12px; background: rgba(25,230,207,.92); color: #00201c; font-weight: 700; pointer-events: none; }
+
+  .panel { position: fixed; z-index: 15; left: 10px; right: 10px; top: 56px; max-height: calc(100% - 200px);
+    overflow: auto; background: rgba(0,0,0,.86); border: 1px solid rgba(255,255,255,.2);
+    border-radius: 14px; padding: 12px 14px; font-size: 13px; line-height: 1.7; touch-action: pan-y; }
+  .panel h3 { margin: 0 0 6px; font-size: 15px; color: var(--accent); }
+  .panel label { display: block; margin-top: 8px; }
+  .panel input[type=range] { width: 100%; }
+  .panel select { width: 100%; margin-top: 4px; font: inherit; padding: 8px; border-radius: 8px;
+    background: #111; color: #fff; border: 1px solid rgba(255,255,255,.3); }
+
+  #startScreen { position: fixed; inset: 0; z-index: 30; background: #05080a; display: flex;
+    flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; text-align: center; }
+  #startScreen h1 { margin: 0; font-size: 26px; }
+  #startScreen #startBtn { font-size: 20px; padding: 16px 34px; background: var(--accent); color: #00201c; font-weight: 800; }
+  #startScreen small { opacity: .65; max-width: 340px; }
+  #loadMsg { min-height: 20px; opacity: .9; }
+  #langRow { display: flex; gap: 8px; }
+  #langRow button { min-height: 40px; padding: 6px 14px; }
+  #langRow button.active { background: var(--accent); color: #00201c; }
+
+  #err { display: none; position: fixed; z-index: 40; left: 8px; right: 8px; top: 8px; max-height: 40%;
+    overflow: auto; white-space: pre-wrap; background: rgba(160,0,0,.92); color: #fff;
+    border-radius: 10px; padding: 8px 10px; font: 12px/1.4 monospace; }
+
+  .hidden { display: none !important; }
+</style>
+</head>
+
+<body>
+<video id="video" class="mirror" autoplay playsinline muted></video>
+<canvas id="three"></canvas>
+<canvas id="overlay"></canvas>
+<div id="frame"></div>
+<div id="flash"></div>
+
+<div id="top">
+  <div id="stats" class="pill expert-only">
+    <div id="gesture">READY</div>
+    <div>hands <b id="hands">0</b> · cubes <b id="count">0</b> · plane <b id="plane">XY auto</b> · fps <b id="fps">0</b></div>
+  </div>
+  <div id="staff">
+    <button id="btnCam">🔄</button>
+    <button id="btnSettings">⚙</button>
+    <button id="btnHelp">?</button>
+  </div>
+</div>
+
+<div id="coach" class="hidden" data-dir><div id="coachText"></div><div id="coachDots"></div></div>
+<div id="dist" class="hidden" data-dir></div>
+<div id="attract" class="hidden" data-dir><div id="attractTitle"></div><div id="attractCap"></div></div>
+<div id="hint" class="hidden" data-dir><div data-i18n="hintTitle"></div><small data-i18n="hintSub"></small></div>
+<div id="toast" class="hidden" data-dir></div>
+<div id="legend" class="pill expert-only">🤏 draw · ✊ spin · 🙌 hold still, then turn · 🤏🤏 zoom</div>
+
+<div id="help" class="panel hidden" dir="rtl">
+  <h3>دليل المشرف</h3>
+  <div><b>وضع المعرض (الافتراضي):</b> أربع حركات فقط: 🤏 قرصة = رسم · ✊ قبضة (0.2 ثانية) = تدوير · 🤏🤏 قرصتان = تكبير/تصغير · أزرار كبيرة تُضغط بالقرص فوقها.</div>
+  <div><b>وضع الخبير:</b> يضيف 🙌 يدين مفتوحتين (ثبّتهما نصف ثانية ثم حرّكهما) للتدوير الثلاثي، وزر ↔ SIZE (المسافة بين الإبهام والسبابة = الحجم)، ولوحة المعلومات.</div>
+  <div>الرسم داخل مستوى واحد (شبكة خفيفة)، والخطوط المستقيمة تُثبَّت تلقائياً، والزاوية تُصنع بحركة جانبية واضحة، والرجوع للخلف يقصّر الخط.</div>
+  <div>أول من يظهر بأكبر يد هو "الزائر"؛ الأيدي الأصغر والأبعد تُتجاهل، وتنتهي الجلسة بعد 5 ثوانٍ من غياب يده.</div>
+  <div>المحو أداة مؤقتة: يعود تلقائياً للرسم بعد 8 ثوانٍ دون قرصة. المحاور: X أحمر، Y أخضر، Z أزرق.</div>
+  <div>إن لم تُلتقط القرصة: ⚙ ثم ارفع Pinch. إن وصل المؤشر بصعوبة إلى الحواف: ارفع Reach.</div>
+</div>
+
+<div id="settings" class="panel hidden">
+  <h3>Staff settings</h3>
+  <label>Language
+    <select id="selLang"><option value="ar">العربية</option><option value="fr">Français</option><option value="en">English</option></select></label>
+  <label>Mode
+    <select id="selMode"><option value="exhibition">Exhibition (4 simple gestures)</option><option value="expert">Expert (all gestures + stats)</option></select></label>
+  <label>Pinch sensitivity (higher = easier)
+    <input id="sensPinch" type="range" min="0.18" max="0.50" step="0.01" value="0.30"></label>
+  <label>Reach (how far the cursor travels per hand movement)
+    <input id="sensReach" type="range" min="1" max="2" step="0.1" value="1.5"></label>
+  <label>Rotation speed
+    <input id="sensRot" type="range" min="1" max="8" step="0.5" value="4"></label>
+  <label>Tracking rate (lower = lighter on the device)
+    <select id="selRate"><option value="33">30 / s</option><option value="50">20 / s</option><option value="66">15 / s</option></select></label>
+  <label>Render quality
+    <select id="selQuality"><option value="0.75">Low</option><option value="1">Medium</option><option value="1.25">High</option><option value="1.5">Very high</option></select></label>
+  <label>Drawing plane
+    <select id="selPlane"><option value="auto">Auto (the plane facing you)</option><option value="xy">XY (front)</option><option value="xz">XZ (floor)</option><option value="yz">YZ (side)</option></select></label>
+  <label><input id="chkAssist" type="checkbox" checked> Straight-line assist</label>
+  <label><input id="chkSound" type="checkbox" checked> Sounds</label>
+  <label>Auto-clear when nobody is there
+    <select id="selIdle"><option value="0">Off</option><option value="45">after 45 s</option><option value="90">after 90 s</option><option value="180">after 3 min</option></select></label>
+</div>
+
+<div id="bar">
+  <button id="btnDraw" data-air class="active"><span class="ico">✏️</span><span class="lbl" data-i18n="bDraw"></span></button>
+  <button id="btnErase" data-air><span class="ico">🧽</span><span class="lbl" data-i18n="bErase"></span></button>
+  <button id="btnSize"><span class="ico">↔</span><span class="lbl">SIZE</span></button>
+  <button id="btnUndo" data-air><span class="ico">↶</span><span class="lbl" data-i18n="bUndo"></span></button>
+  <button id="btnReset" data-air><span class="ico">⟲</span><span class="lbl" data-i18n="bView"></span></button>
+  <button id="btnShot" data-air><span class="ico">📸</span><span class="lbl" data-i18n="bShot"></span></button>
+  <button id="btnNew" data-air class="danger"><span class="ico">🗑</span><span class="lbl" data-i18n="bNew"></span></button>
+</div>
+
+<div id="startScreen">
+  <h1 data-i18n="title" data-dir>Hand Voxel Editor</h1>
+  <div id="langRow">
+    <button data-lang="ar">العربية</button><button data-lang="fr">Français</button><button data-lang="en">English</button>
+  </div>
+  <div id="loadMsg">Loading scripts…</div>
+  <button id="startBtn" data-i18n="start" disabled>START</button>
+  <small data-i18n="startNote" data-dir></small>
+</div>
+
+<pre id="err"></pre>
+
+<script type="module">
+import * as THREE from "three";
+
+// ---------- core.js ----------
+// ======================================================================
+//  core.js  —  pure math helpers (no Three.js, no DOM)
+// ======================================================================
+
+// ---------- voxel grid helpers ----------------------------------------
+// A cell (x,y,z) is an integer triple; its centre is at (x,y,z) and it
+// occupies [x-0.5, x+0.5] on each axis.
+const key = (x, y, z) => ((x + 512) * 1024 + (y + 512)) * 1024 + (z + 512);
+
+/**
+ * Walk a ray through the grid (Amanatides & Woo DDA) and return the first
+ * occupied cell together with the face normal we entered through.
+ *   has(x,y,z) -> bool    o, d : {x,y,z} in cell space (d need not be unit)
+ */
+function traverse(has, o, d, maxSteps = 600) {
+  const px = o.x + 0.5, py = o.y + 0.5, pz = o.z + 0.5;
+  let x = Math.floor(px), y = Math.floor(py), z = Math.floor(pz);
+  const sx = d.x > 0 ? 1 : -1, sy = d.y > 0 ? 1 : -1, sz = d.z > 0 ? 1 : -1;
+  const dx = d.x !== 0 ? Math.abs(1 / d.x) : Infinity;
+  const dy = d.y !== 0 ? Math.abs(1 / d.y) : Infinity;
+  const dz = d.z !== 0 ? Math.abs(1 / d.z) : Infinity;
+  let tx = d.x > 0 ? (x + 1 - px) * dx : d.x < 0 ? (px - x) * dx : Infinity;
+  let ty = d.y > 0 ? (y + 1 - py) * dy : d.y < 0 ? (py - y) * dy : Infinity;
+  let tz = d.z > 0 ? (z + 1 - pz) * dz : d.z < 0 ? (pz - z) * dz : Infinity;
+  let n = [0, 0, 0];
+  for (let i = 0; i < maxSteps; i++) {
+    if (tx < ty && tx < tz) { x += sx; tx += dx; n = [-sx, 0, 0]; }
+    else if (ty < tz)       { y += sy; ty += dy; n = [0, -sy, 0]; }
+    else                    { z += sz; tz += dz; n = [0, 0, -sz]; }
+    if (Math.abs(x) > 500 || Math.abs(y) > 500 || Math.abs(z) > 500) return null;
+    if (has(x, y, z)) return { cell: [x, y, z], normal: n };
+  }
+  return null;
+}
+
+// ---------- signal smoothing (One Euro filter) ------------------------
+class OneEuro {
+  constructor(minCutoff = 1.5, beta = 6, dCutoff = 1.0) {
+    this.minCutoff = minCutoff; this.beta = beta; this.dCutoff = dCutoff;
+    this.reset();
+  }
+  reset() { this.x = null; this.dx = 0; this.t = 0; }
+  static alpha(cutoff, dt) { const tau = 1 / (2 * Math.PI * cutoff); return 1 / (1 + tau / dt); }
+  filter(v, t) {                       // t in seconds
+    if (this.x === null) { this.x = v; this.t = t; this.dx = 0; return v; }
+    const dt = Math.max(t - this.t, 1e-3);
+    this.t = t;
+    const raw = (v - this.x) / dt;
+    const ad = OneEuro.alpha(this.dCutoff, dt);
+    this.dx = ad * raw + (1 - ad) * this.dx;
+    const a = OneEuro.alpha(this.minCutoff + this.beta * Math.abs(this.dx), dt);
+    this.x = a * v + (1 - a) * this.x;
+    return this.x;
+  }
+}
+
+// ---------- angles ----------------------------------------------------
+// wrap an angle difference of an (undirected) line into (-PI/2, PI/2]
+function wrapHalfPi(a) {
+  return ((((a + Math.PI / 2) % Math.PI) + Math.PI) % Math.PI) - Math.PI / 2;
+}
+
+// ---------- video -> screen mapping -----------------------------------
+// The <video> uses object-fit: cover (and is CSS-mirrored for the front
+// camera), so normalised landmark coords must be mapped the same way.
+function toScreen(nx, ny, vw, vh, W, H, mirror) {
+  const s = Math.max(W / vw, H / vh);
+  const dw = vw * s, dh = vh * s;
+  let x = (W - dw) / 2 + nx * dw;
+  const y = (H - dh) / 2 + ny * dh;
+  if (mirror) x = W - x;
+  return { x, y };
+}
+
+// ---------- hand analysis ---------------------------------------------
+const TIPS_PIPS = [[8, 6], [12, 10], [16, 14], [20, 18]];   // [tip, pip]
+
+function analyzeHand(lm, vw, vh) {
+  const d = (a, b) => Math.hypot(
+    (lm[a].x - lm[b].x) * vw,
+    (lm[a].y - lm[b].y) * vh,
+    (lm[a].z - lm[b].z) * vw);
+  const palm = Math.max(d(0, 9), 1e-6);              // wrist -> middle knuckle
+  const pinchRatio = d(4, 8) / palm;                 // thumb tip <-> index tip
+  const curled = TIPS_PIPS.map(([tip, pip]) => d(tip, 0) < d(pip, 0));
+  const fist = curled[0] && curled.filter(Boolean).length >= 3;
+  return {
+    pinchRatio, fist,
+    size: palm / vh,                                    // palm length / frame height: bigger = closer
+    pinch: { x: (lm[4].x + lm[8].x) / 2, y: (lm[4].y + lm[8].y) / 2 },
+    palm:  { x: (lm[0].x + lm[5].x + lm[17].x) / 3, y: (lm[0].y + lm[5].y + lm[17].y) / 3 },
+  };
+}
+
+// ---------- drawing helpers -------------------------------------------
+// round with hysteresis: keeps the previous cell until the cursor is clearly inside
+// another one, so a shaky hand does not flicker between two neighbouring cells
+function snapHyst(prev, v, h = 0.2) {
+  return prev !== null && Math.abs(v - prev) <= 0.5 + h ? prev : Math.round(v);
+}
+
+/**
+ * Straight-line assisted stroke, confined to one grid-aligned plane (normal axis `n`).
+ *  - the stroke is a polyline of axis-aligned segments (a rubber band from the corner)
+ *  - small sideways wobble (< tol cells) is ignored  -> lines come out straight
+ *  - a clear sideways move (>= tol cells) starts a new segment (corner)  -> L / U shapes
+ *  - moving back along the segment removes the cubes this segment created (overshoot fix)
+ * world needs: add(x,y,z) -> bool (true if created), remove(x,y,z)
+ */
+class AxisStroke {
+  constructor(world, normalAxis, start) {
+    this.w = world; this.n = normalAxis;
+    this.p = [0, 1, 2].filter((a) => a !== normalAxis);   // the two in-plane axes
+    this.S = start.slice();                               // corner = start of current segment
+    this.layer = start[normalAxis];
+    this.axis = null; this.len = 0; this.made = new Set(); // signed offsets created by the segment
+    this.snap = [null, null, null];
+    this.last = start.slice();
+    this.cur = start.slice();
+    world.add(start[0], start[1], start[2]);
+  }
+  // call on release: a short 1-cell stroke (direction never decided) still places its cube
+  finish() {
+    if (this.axis !== null) return;
+    const q = this.p, d = [0, 1, 2].map((i) => this.cur[i] - this.S[i]);
+    const a0 = Math.abs(d[q[0]]), a1 = Math.abs(d[q[1]]);
+    if (Math.max(a0, a1) < 1) return;
+    this.axis = a0 >= a1 ? q[0] : q[1];
+    this.setLen(d[this.axis]);
+  }
+  cellAt(t) { const c = this.S.slice(); c[this.axis] += t; return c; }
+  setLen(len) {
+    const w = this.w, sg = Math.sign(len), want = new Set();
+    for (let k = 1; k <= Math.abs(len); k++) want.add(k * sg);
+    for (const t of [...this.made]) {
+      if (!want.has(t)) { const c = this.cellAt(t); w.remove(c[0], c[1], c[2]); this.made.delete(t); }
+    }
+    for (const t of want) {
+      if (!this.made.has(t)) { const c = this.cellAt(t); if (w.add(c[0], c[1], c[2])) this.made.add(t); }
+    }
+    this.len = len;
+    this.last = this.cellAt(len);
+  }
+  // f = cursor position on the plane in (fractional) cell coordinates
+  update(f, tol = 1.5) {
+    const q = this.p;
+    for (const a of q) this.snap[a] = snapHyst(this.snap[a], f[a]);
+    const cur = [0, 0, 0];
+    for (const a of q) cur[a] = this.snap[a];
+    cur[this.n] = this.layer;
+    this.cur = cur;
+    for (let guard = 0; guard < 4; guard++) {
+      const d = [cur[0] - this.S[0], cur[1] - this.S[1], cur[2] - this.S[2]];
+      if (this.axis === null) {
+        const a0 = Math.abs(d[q[0]]), a1 = Math.abs(d[q[1]]), mx = Math.max(a0, a1);
+        if (mx < 2 || (mx < 3 && Math.abs(a0 - a1) < 1)) return;     // direction not clear yet
+        this.axis = a0 >= a1 ? q[0] : q[1];
+      }
+      const a = this.axis, o = a === q[0] ? q[1] : q[0];
+      // sideways drift is ignored inside a ~29° cone around the axis (and below tol cells):
+      // you only need to move roughly along the line, not exactly
+      if (Math.abs(d[o]) >= Math.max(tol, 0.55 * Math.abs(d[a]))) {   // deliberate turn
+        this.setLen(d[a]);                                            // finish the segment first
+        this.S = this.last.slice(); this.axis = o; this.len = 0; this.made = new Set();
+        continue;
+      }
+      this.setLen(d[a]);
+      return;
+    }
+  }
+}
+
+/**
+ * Exhibition helper: decides WHOSE hands count.
+ *  - hands that are too small (far away, > ~1 m) are ignored
+ *  - the visitor = the biggest (closest) hands, at most two
+ *  - while a visitor is active, only hands of a similar size are accepted (others are ignored)
+ *  - the session ends after `gapSec` seconds without the visitor's hands
+ */
+class VisitorSession {
+  constructor() { this.active = false; this.size = 0; this.last = 0; }
+  update(found, t, minSize = 0.08, gapSec = 5) {
+    let c = found.filter((h) => h.size >= minSize).sort((a, b) => b.size - a.size);
+    if (this.active) c = c.filter((h) => h.size > this.size * 0.5 && h.size < this.size * 2.0);
+    c = c.slice(0, 2);
+    let started = false, ended = false;
+    if (c.length) {
+      if (!this.active) { this.active = true; this.size = c[0].size; started = true; }
+      else this.size = 0.92 * this.size + 0.08 * c[0].size;
+      this.last = t;
+    } else if (this.active && t - this.last > gapSec) { this.active = false; ended = true; }
+    return { hands: c, started, ended };
+  }
+}
+
+
+// ---------- voxels.js ----------
+// ======================================================================
+//  voxels.js  —  Three.js scene + voxel storage (starts EMPTY)
+// ======================================================================
+
+
+
+const MAX_VOXELS = 6000;
+const LIMIT = 400;                       // max |cell coordinate|
+const MIN_SCALE = 0.1, MAX_SCALE = 2.5;
+
+function cubeTexture() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 64;
+  const g = c.getContext("2d");
+  g.fillStyle = "#1fd6c1";  g.fillRect(0, 0, 64, 64);
+  g.fillStyle = "rgba(255,255,255,0.14)"; g.fillRect(5, 5, 54, 18);
+  g.strokeStyle = "#07443d"; g.lineWidth = 6; g.strokeRect(3, 3, 58, 58);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+function labelTexture(text, color) {
+  const c = document.createElement("canvas");
+  c.width = c.height = 64;
+  const g = c.getContext("2d");
+  g.fillStyle = color; g.font = "bold 46px sans-serif"; g.textAlign = "center"; g.textBaseline = "middle";
+  g.fillText(text, 32, 36);
+  return new THREE.CanvasTexture(c);
+}
+
+// isometric-style start view: top, front and side faces are all visible, so x / y / z read as 3D
+function defaultQuat() {
+  const qx = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), 0.5);
+  const qy = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -0.6);
+  return qy.premultiply(qx);                         // = Rx * Ry
+}
+
+class VoxelWorld {
+  constructor(canvas) {
+    this.canvas = canvas;
+    // no MSAA + lower pixel ratio = much cheaper on phones (see "Render quality" in settings)
+    this.renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: false, powerPreference: "high-performance" });
+    this.pixelRatio = Math.min(window.devicePixelRatio || 1, 1.25);
+    this.renderer.setPixelRatio(this.pixelRatio);
+    this.renderer.setClearColor(0x000000, 0);
+
+    this.scene = new THREE.Scene();
+    this.camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
+    this.camera.position.set(0, 0, 10);                 // looks down -Z
+
+    this.scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+    const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+    sun.position.set(4, 6, 8);
+    this.scene.add(sun);
+
+    // root = position / rotation / scale of the whole model
+    // content = offset of -pivot, so the model turns around its own centre
+    this.root = new THREE.Group();
+    this.root.scale.setScalar(0.5);
+    this.defaultQ = defaultQuat();
+    this.root.quaternion.copy(this.defaultQ);
+    this.targetQ = this.defaultQ.clone();      // hands change the TARGET pose,
+    this.targetS = 0.5;                        // update() eases the real pose toward it
+    this.scene.add(this.root);
+    this.content = new THREE.Group();
+    this.root.add(this.content);
+
+    this.mesh = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshLambertMaterial({ map: cubeTexture() }),
+      MAX_VOXELS);
+    this.mesh.count = 0;
+    this.mesh.frustumCulled = false;
+    this.content.add(this.mesh);
+
+    // ghost cube = cursor preview
+    const gbox = new THREE.BoxGeometry(1.05, 1.05, 1.05);
+    this.ghostFill = new THREE.Mesh(gbox, new THREE.MeshBasicMaterial(
+      { color: 0xffffff, transparent: true, opacity: 0.3, depthTest: false }));
+    this.ghostEdges = new THREE.LineSegments(new THREE.EdgesGeometry(gbox),
+      new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false }));
+    this.ghostFill.renderOrder = this.ghostEdges.renderOrder = 10;
+    this.ghost = new THREE.Group();
+    this.ghost.add(this.ghostFill, this.ghostEdges);
+    this.ghost.visible = false;
+    this.content.add(this.ghost);
+
+    // colour-coded axes (X red, Y green, Z blue) at the model's centre
+    const L = 4;
+    [["X", "#ff5a5a", 0xff5a5a, [1, 0, 0]], ["Y", "#5aff78", 0x5aff78, [0, 1, 0]], ["Z", "#5aa8ff", 0x5aa8ff, [0, 0, 1]]]
+      .forEach(([name, css, hex, dir]) => {
+        const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, L, 6),
+          new THREE.MeshBasicMaterial({ color: hex, transparent: true, opacity: 0.6, depthTest: false }));
+        bar.position.set(dir[0] * L / 2, dir[1] * L / 2, dir[2] * L / 2);
+        if (dir[0]) bar.rotation.z = -Math.PI / 2;
+        if (dir[2]) bar.rotation.x = Math.PI / 2;
+        const tag = new THREE.Sprite(new THREE.SpriteMaterial({ map: labelTexture(name, css), depthTest: false, transparent: true }));
+        tag.scale.set(0.95, 0.95, 1);
+        tag.position.set(dir[0] * (L + 0.7), dir[1] * (L + 0.7), dir[2] * (L + 0.7));
+        bar.renderOrder = tag.renderOrder = 8;
+        this.root.add(bar, tag);
+      });
+
+    // faint grid on the plane you are about to draw on
+    this.grid = new THREE.GridHelper(16, 16, 0x19e6cf, 0x19e6cf);
+    this.grid.material.transparent = true;
+    this.grid.material.opacity = 0.28;
+    this.grid.material.depthTest = false;
+    this.grid.renderOrder = 9;
+    this.grid.visible = false;
+    this.content.add(this.grid);
+
+    this.cells = new Map();      // key -> instance index
+    this.coords = [];            // instance index -> [x,y,z]
+    this.history = [];           // list of strokes (for undo)
+    this.stroke = null;
+
+    this.raycaster = new THREE.Raycaster();
+    this.plane = new THREE.Plane();
+    this._m = new THREE.Matrix4();
+    this._q = new THREE.Quaternion();
+    this._v = new THREE.Vector3();
+    this._p = new THREE.Vector3();
+    this._inv = new THREE.Matrix4();
+    this._ndc = new THREE.Vector2();
+    this._o = new THREE.Vector3();
+    this._d = new THREE.Vector3();
+
+    this.resize(window.innerWidth, window.innerHeight);
+  }
+
+  get count() { return this.coords.length; }
+
+  // ------------------------------------------------------------ voxels
+  add(x, y, z, record = true) {
+    if (Math.abs(x) > LIMIT || Math.abs(y) > LIMIT || Math.abs(z) > LIMIT) return false;
+    const k = key(x, y, z);
+    if (this.cells.has(k) || this.coords.length >= MAX_VOXELS) return false;
+    const i = this.coords.length;
+    this.coords.push([x, y, z]);
+    this.cells.set(k, i);
+    this._m.makeTranslation(x, y, z);
+    this.mesh.setMatrixAt(i, this._m);
+    this.mesh.count = i + 1;
+    this.mesh.instanceMatrix.needsUpdate = true;
+    if (record && this.stroke) this.stroke.push(["a", x, y, z]);
+    return true;
+  }
+
+  remove(x, y, z, record = true) {
+    const k = key(x, y, z);
+    const i = this.cells.get(k);
+    if (i === undefined) return false;
+    const last = this.coords.length - 1;
+    if (i !== last) {                       // move the last cube into the hole
+      const c = this.coords[last];
+      this.coords[i] = c;
+      this.cells.set(key(c[0], c[1], c[2]), i);
+      this._m.makeTranslation(c[0], c[1], c[2]);
+      this.mesh.setMatrixAt(i, this._m);
+    }
+    this.coords.pop();
+    this.cells.delete(k);
+    this.mesh.count = this.coords.length;
+    this.mesh.instanceMatrix.needsUpdate = true;
+    if (record && this.stroke) this.stroke.push(["r", x, y, z]);
+    return true;
+  }
+
+  // ------------------------------------------------------------ undo
+  beginStroke() { this.stroke = []; }
+  endStroke() {
+    if (this.stroke && this.stroke.length) {
+      this.history.push(this.stroke);
+      if (this.history.length > 200) this.history.shift();
+    }
+    this.stroke = null;
+  }
+  undo() {
+    const s = this.history.pop();
+    if (!s) return false;
+    for (let i = s.length - 1; i >= 0; i--) {
+      const [t, x, y, z] = s[i];
+      if (t === "a") this.remove(x, y, z, false); else this.add(x, y, z, false);
+    }
+    return true;
+  }
+
+  clear() {
+    this.coords.length = 0;
+    this.cells.clear();
+    this.mesh.count = 0;
+    this.history.length = 0;
+    this.stroke = null;
+    this.ghost.visible = false;
+    this.content.position.set(0, 0, 0);
+    this.root.position.set(0, 0, 0);
+    this.hidePlane();
+    this.resetView(true);
+  }
+
+  // back to the friendly start view: isometric tilt, default size, shape centred
+  resetView(instant = false) {
+    this.recenter();
+    this.targetQ.copy(this.defaultQ);
+    this.targetS = 0.5;
+    if (instant) { this.root.quaternion.copy(this.defaultQ); this.root.scale.setScalar(0.5); }
+  }
+
+  // ------------------------------------------------------------ transform
+  // call once per display frame: eases the visible pose toward the target pose, so the
+  // model stays smooth even when hand tracking only delivers 15-20 updates per second
+  update(dt) {
+    const k = 1 - Math.exp(-dt * 16);
+    this.root.quaternion.slerp(this.targetQ, k);
+    this.root.scale.setScalar(this.root.scale.x + (this.targetS - this.root.scale.x) * k);
+    this.root.updateMatrixWorld(true);
+  }
+  rotate(axis, angle) {                                      // axis: unit vector, world space
+    this._q.setFromAxisAngle(axis, angle);
+    this.targetQ.premultiply(this._q).normalize();
+  }
+  getScale() { return this.targetS; }
+  setScale(s) { this.targetS = Math.min(MAX_SCALE, Math.max(MIN_SCALE, s)); }
+  setPixelRatio(r) {
+    this.pixelRatio = r;
+    this.renderer.setPixelRatio(r);
+    this.renderer.setSize(window.innerWidth, window.innerHeight, false);
+  }
+
+  // move the rotation pivot to the middle of the shape and put it mid-screen
+  recenter() {
+    this.root.position.set(0, 0, 0);
+    if (!this.coords.length) { this.content.position.set(0, 0, 0); return; }
+    const mn = [1e9, 1e9, 1e9], mx = [-1e9, -1e9, -1e9];
+    for (const c of this.coords) for (let a = 0; a < 3; a++) {
+      if (c[a] < mn[a]) mn[a] = c[a];
+      if (c[a] > mx[a]) mx[a] = c[a];
+    }
+    this.content.position.set(-(mn[0] + mx[0]) / 2, -(mn[1] + mx[1]) / 2, -(mn[2] + mx[2]) / 2);
+  }
+
+  // ------------------------------------------------------------ picking
+  has(x, y, z) { return this.cells.has(key(x, y, z)); }
+
+  // pointer ray in the model's own cell coordinates (cell centres at integers)
+  _localRay(nx, ny) {
+    this.raycaster.setFromCamera(this._ndc.set(nx, ny), this.camera);
+    this._inv.copy(this.content.matrixWorld).invert();
+    this._o.copy(this.raycaster.ray.origin).applyMatrix4(this._inv);
+    this._d.copy(this.raycaster.ray.direction).transformDirection(this._inv);
+    return [this._o, this._d];
+  }
+
+  // first voxel under a screen point (NDC) + the face we hit
+  pick(nx, ny) {
+    if (!this.coords.length) return null;
+    const [o, d] = this._localRay(nx, ny);
+    return traverse((x, y, z) => this.cells.has(key(x, y, z)), o, d);
+  }
+
+  // grid axis (0=x 1=y 2=z) that points most toward the viewer under this pointer
+  autoAxis(nx, ny) {
+    const [, d] = this._localRay(nx, ny);
+    const a = [Math.abs(d.x), Math.abs(d.y), Math.abs(d.z)];
+    return a[0] >= a[1] && a[0] >= a[2] ? 0 : a[1] >= a[2] ? 1 : 2;
+  }
+
+  // pointer position on the grid plane { coordinate[axis] = value }, in fractional cells
+  planeHit(nx, ny, axis, value) {
+    const [o, d] = this._localRay(nx, ny);
+    const k = "xyz"[axis];
+    if (Math.abs(d[k]) < 0.15) return null;               // plane almost edge-on: ignore
+    const t = (value - o[k]) / d[k];
+    if (t <= 0) return null;
+    return [o.x + d.x * t, o.y + d.y * t, o.z + d.z * t];
+  }
+
+  // the cell that sits at the rotation centre
+  pivotCell() { return [-this.content.position.x, -this.content.position.y, -this.content.position.z]; }
+
+  showPlane(axis, cell) {
+    const g = this.grid;
+    g.rotation.set(axis === 2 ? Math.PI / 2 : 0, 0, axis === 0 ? Math.PI / 2 : 0);
+    g.position.set(axis === 0 ? cell[0] : cell[0] + 0.5, axis === 1 ? cell[1] : cell[1] + 0.5, axis === 2 ? cell[2] : cell[2] + 0.5);
+    g.visible = true;
+  }
+  hidePlane() { this.grid.visible = false; }
+
+  setGhost(cell, color = 0xffffff) {
+    if (!cell) { this.ghost.visible = false; return; }
+    this.ghost.position.set(cell[0], cell[1], cell[2]);
+    this.ghostFill.material.color.setHex(color);
+    this.ghostEdges.material.color.setHex(color);
+    this.ghost.visible = true;
+  }
+
+  // ------------------------------------------------------------ render
+  resize(w, h) {
+    this.renderer.setSize(w, h, false);
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+  }
+  render() { this.renderer.render(this.scene, this.camera); }
+}
+
+
+// ---------- hands.js ----------
+// ======================================================================
+//  hands.js  —  camera + MediaPipe Hand Landmarker (runs in the phone's browser)
+// ======================================================================
+
+
+// MediaPipe builds to try, newest first. 1.1.0 (released Oct 2026) is the one that already
+// ran on your phone; the others are fallbacks if a CDN file is missing.
+const BUILDS = [
+  { base: "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.0",  file: "/+esm" },
+  { base: "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1",  file: "/+esm" },
+  { base: "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21", file: "/vision_bundle.mjs" },
+];
+const MODEL =
+  "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+
+async function startCamera(video, facing = "user") {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error("Camera API unavailable — the page must be opened over https (ngrok link).");
+  }
+  if (video.srcObject) video.srcObject.getTracks().forEach((t) => t.stop());
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: {
+      facingMode: { ideal: facing },
+      width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 },
+    },
+  });
+  video.srcObject = stream;
+  await new Promise((res) => { video.onloadedmetadata = res; });
+  await video.play();
+}
+
+async function createHandTracker(onStatus = () => {}) {
+  onStatus("Loading MediaPipe…");
+  let mod = null, base = null, lastErr = null;
+  for (const b of BUILDS) {
+    try { mod = await import(b.base + b.file); base = b.base; break; }
+    catch (e) { lastErr = e; console.warn("MediaPipe build failed:", b.base, e); }
+  }
+  if (!mod) throw new Error("Could not load MediaPipe from the CDN: " + (lastErr && lastErr.message));
+  const { HandLandmarker, FilesetResolver } = mod;
+  const fileset = await FilesetResolver.forVisionTasks(`${base}/wasm`);
+  const make = (delegate) => HandLandmarker.createFromOptions(fileset, {
+    baseOptions: { modelAssetPath: MODEL, delegate },
+    runningMode: "VIDEO",
+    numHands: 4,
+    minHandDetectionConfidence: 0.5,
+    minHandPresenceConfidence: 0.5,
+    minTrackingConfidence: 0.5,
+  });
+  onStatus("Loading hand model…");
+  try { return await make("GPU"); }
+  catch (e) { console.warn("GPU delegate failed, falling back to CPU", e); return await make("CPU"); }
+}
+
+// returns [{ label:"Left"|"Right", lm, pinchRatio, fist, pinch:{x,y}, palm:{x,y} }]
+function detectHands(tracker, video, nowMs) {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const res = tracker.detectForVideo(video, nowMs);
+  const out = [];
+  (res.landmarks || []).forEach((lm, i) => {
+    const cat = res.handedness && res.handedness[i] && res.handedness[i][0];
+    out.push({ ...analyzeHand(lm, vw, vh), lm, label: cat ? cat.categoryName : (i ? "Right" : "Left") });
+  });
+  if (out.length === 2 && out[0].label === out[1].label) { out[0].label = "Left"; out[1].label = "Right"; }
+  return out;
+}
+
+
+// ---------- ui.js ----------
+// ======================================================================
+//  ui.js  —  visitor texts (AR / FR / EN), sound, and the "ghost hand" attract animation
+// ======================================================================
+
+const I18N = {
+  ar: {
+    title: "ارسم بيديك في الهواء",
+    startNote: "اسمح بالوصول إلى الكاميرا عند الطلب. المعالجة تتم على هذا الجهاز فقط.",
+    start: "ابدأ",
+    hintTitle: "🖐 ارفع يدك أمام الكاميرا",
+    hintSub: "اقرص 🤏 الإبهام والسبابة لترسم",
+    attractTitle: "جرّب الرسم بيديك!",
+    attract: ["🤏 اقرص واسحب لترسم", "✊ اقبض يدك وحرّكها لتدير الشكل", "🤏🤏 باعد بين يديك للتكبير"],
+    coach: ["🤏 اقرص واسحب لترسم", "✊ اقبض يدك وحرّكها لتدير الشكل", "🤏🤏 اقرص بيديك وباعد بينهما للتكبير"],
+    ok: "أحسنت!",
+    draw: "رسم", erase: "محو", spin: "تدوير", zoom: "تكبير",
+    closer: "اقترب قليلاً", back: "ابتعد قليلاً",
+    sure: "اضغط مرة أخرى", cleared: "تم المسح للزائر التالي", saved: "تم حفظ الصورة 📸", backDraw: "عدنا إلى الرسم",
+    bDraw: "رسم", bErase: "محو", bUndo: "تراجع", bView: "إعادة", bNew: "جديد", bShot: "صورة",
+  },
+  fr: {
+    title: "Dessinez avec vos mains",
+    startNote: "Autorisez la caméra quand on vous le demande. Tout est traité sur cet appareil.",
+    start: "Commencer",
+    hintTitle: "🖐 Levez la main devant la caméra",
+    hintSub: "Pincez 🤏 pouce + index pour dessiner",
+    attractTitle: "Essayez de dessiner avec vos mains !",
+    attract: ["🤏 Pincez et glissez pour dessiner", "✊ Fermez le poing et bougez pour tourner", "🤏🤏 Écartez les mains pour agrandir"],
+    coach: ["🤏 Pincez et glissez pour dessiner", "✊ Fermez le poing et bougez pour tourner", "🤏🤏 Pincez à deux mains et écartez pour agrandir"],
+    ok: "Bravo !",
+    draw: "dessin", erase: "gomme", spin: "rotation", zoom: "zoom",
+    closer: "Rapprochez-vous un peu", back: "Reculez un peu",
+    sure: "Appuyez encore", cleared: "Effacé pour le prochain visiteur", saved: "Image enregistrée 📸", backDraw: "Retour au dessin",
+    bDraw: "Dessin", bErase: "Gomme", bUndo: "Annuler", bView: "Vue", bNew: "Nouveau", bShot: "Photo",
+  },
+  en: {
+    title: "Draw in the air with your hands",
+    startNote: "Allow camera access when asked. Everything is processed on this device.",
+    start: "Start",
+    hintTitle: "🖐 Raise your hand to the camera",
+    hintSub: "Pinch 🤏 thumb + index to draw",
+    attractTitle: "Try drawing with your hands!",
+    attract: ["🤏 Pinch and drag to draw", "✊ Make a fist and move to turn", "🤏🤏 Pull your hands apart to zoom"],
+    coach: ["🤏 Pinch and drag to draw", "✊ Make a fist and move to turn", "🤏🤏 Pinch with both hands and pull apart to zoom"],
+    ok: "Nice!",
+    draw: "draw", erase: "erase", spin: "spin", zoom: "zoom",
+    closer: "Move a little closer", back: "Step back a little",
+    sure: "Press again", cleared: "Cleared for the next visitor", saved: "Picture saved 📸", backDraw: "Back to drawing",
+    bDraw: "Draw", bErase: "Erase", bUndo: "Undo", bView: "View", bNew: "New", bShot: "Photo",
+  },
+};
+function makeT(lang) { return I18N[lang] || I18N.en; }
+
+// ---------------------------------------------------------------- sound
+let actx = null;
+function unlockAudio() {          // call from a tap (the START button)
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === "suspended") actx.resume();
+  } catch (_) {}
+}
+function beep(kind, enabled = true) {
+  if (!enabled || !actx) return;
+  try {
+    const f = kind === "ok" ? 880 : kind === "click" ? 560 : 330;
+    const o = actx.createOscillator(), g = actx.createGain(), now = actx.currentTime;
+    o.type = "sine"; o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(0.12, now + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
+    o.connect(g); g.connect(actx.destination);
+    o.start(now); o.stop(now + 0.15);
+  } catch (_) {}
+}
+
+// ---------------------------------------------------------------- ghost hand (attract mode)
+// a simple line-drawn hand. pose: "pinch" | "fist" | "open".  amt: 0 open .. 1 fully pinched.
+// returns the pinch point so the caller can put a cursor ring / trail there.
+function ghostHand(ctx, x, y, S, pose, amt = 1, alpha = 0.9) {
+  const lerp = (a, b, k) => a + (b - a) * k;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.strokeStyle = "#ffffff"; ctx.fillStyle = "rgba(255,255,255,0.16)"; ctx.lineWidth = S * 0.2;
+  ctx.beginPath(); ctx.ellipse(x, y + S * 0.6, S * 0.46, S * 0.52, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  const roots = [[-0.27, 0.12], [-0.09, 0.08], [0.09, 0.08], [0.27, 0.14]];
+  const len = pose === "fist" ? [0.2, 0.22, 0.2, 0.17] : [0.95, 1.1, 1.0, 0.8];
+  let tip = { x, y };
+  roots.forEach(([bx, by], i) => {
+    const rx = x + S * bx, ry = y + S * by;
+    let tx = rx, ty = ry - S * len[i];
+    if (pose === "pinch" && i === 0) {                      // index finger bends toward the thumb
+      tx = lerp(rx, x - S * 0.2, amt); ty = lerp(ry - S * 0.75, y - S * 0.38, amt);
+      tip = { x: tx, y: ty };
+    }
+    ctx.beginPath(); ctx.moveTo(rx, ry); ctx.lineTo(tx, ty); ctx.stroke();
+  });
+  let thx = x - S * 0.85, thy = y + S * 0.2;
+  if (pose === "pinch") { thx = lerp(thx, tip.x, amt); thy = lerp(thy, tip.y, amt); }
+  else if (pose === "fist") { thx = x - S * 0.1; thy = y + S * 0.3; }
+  ctx.beginPath(); ctx.moveTo(x - S * 0.4, y + S * 0.7); ctx.lineTo(thx, thy); ctx.stroke();
+  ctx.restore();
+  return tip;
+}
+
+// what the attract animation shows at time t (seconds): 3 scenes, 4.2 s each
+const SCENE_SEC = 4.2;
+const ease = (u) => u * u * (3 - 2 * u);
+function attractFrame(t, W, H) {
+  const scene = Math.floor(t / SCENE_SEC) % 3, u = (t % SCENE_SEC) / SCENE_SEC;
+  const cy = H * 0.42, S = Math.min(W, H) * 0.16;
+  const out = { scene, S, hands: [], trail: [], arc: null, line: null };
+  if (scene === 0) {                                              // pinch + drag = draw
+    const k = Math.min(1, Math.max(0, (u - 0.15) / 0.7));
+    const x = W * (0.28 + 0.44 * ease(k)), pinching = u > 0.08 && u < 0.92;
+    out.hands.push({ x, y: cy, pose: "pinch", amt: pinching ? 1 : 0.1 });
+    if (pinching) for (let px = W * 0.28; px <= x; px += S * 0.42) out.trail.push({ x: px, y: cy });
+  } else if (scene === 1) {                                       // fist + move = rotate
+    const a = u * Math.PI * 2;
+    out.hands.push({ x: W * 0.5 + W * 0.16 * Math.sin(a), y: cy + H * 0.04 * Math.cos(a), pose: "fist", amt: 1 });
+    out.arc = { x: W * 0.5, y: cy, r: W * 0.2, a0: a - 1.2, a1: a };
+  } else {                                                        // two pinches apart = zoom
+    const d = W * (0.14 + 0.14 * Math.sin(Math.PI * u));
+    out.hands.push({ x: W * 0.5 - d, y: cy, pose: "pinch", amt: 1 }, { x: W * 0.5 + d, y: cy, pose: "pinch", amt: 1 });
+    out.line = { x1: W * 0.5 - d, x2: W * 0.5 + d, y: cy };
+  }
+  return out;
+}
+
+
+// ---------- main.js ----------
+// ======================================================================
+//  main.js  —  gestures, exhibition behaviour, UI and the main loop
+// ======================================================================
+
+
+
+
+
+
+const $ = (id) => document.getElementById(id);
+const video = $("video"), overlay = $("overlay"), octx = overlay.getContext("2d");
+const world = new VoxelWorld($("three"));
+const session = new VisitorSession();
+
+// ---------------------------------------------------------------- settings (kept between reloads)
+const cfg = { lang: "ar", expert: false, mode: "draw", facing: "user", pinchOn: 0.30, rotSpeed: 4, reach: 1.5,
+              minInterval: 33, quality: 1.25, assist: true, plane: "auto", idleSec: 90, sound: true };
+const SAVED = ["lang", "expert", "pinchOn", "rotSpeed", "reach", "minInterval", "quality", "plane", "assist", "idleSec", "sound"];
+const STORE = "hve_v4";
+function loadCfg() {
+  try {
+    const o = JSON.parse(localStorage.getItem(STORE) || "{}");
+    for (const k of SAVED) if (k in o && typeof o[k] === typeof cfg[k]) cfg[k] = o[k];
+  } catch (_) {}
+}
+function saveCfg() {
+  try { localStorage.setItem(STORE, JSON.stringify(Object.fromEntries(SAVED.map((k) => [k, cfg[k]])))); } catch (_) {}
+}
+loadCfg();
+let T = makeT(cfg.lang);
+
+const PLANE_AXIS = { xy: 2, xz: 1, yz: 0 };            // plane name -> its normal axis
+const PLANE_NAME = ["YZ", "XZ", "XY"];                 // normal axis -> plane name
+const ERASE_TIMEOUT = 8;                               // s without a pinch -> back to drawing
+let W = innerWidth, H = innerHeight, mirror = true, tracker = null, tNow = 0, prevT = 0;
+const AX = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: new THREE.Vector3(0, 0, 1) };
+const axisV = new THREE.Vector3();
+const CYAN = 0x19e6cf, RED = 0xff4040;
+const soft = (v, dz) => (Math.abs(v) <= dz ? 0 : v - Math.sign(v) * dz);
+
+// ---------------------------------------------------------------- hands
+const mkFilter = () => new OneEuro(1.5, 6);
+const makeHand = () => ({ fx: mkFilter(), fy: mkFilter(), fpx: mkFilter(), fpy: mkFilter(), fr: new OneEuro(1.0, 2),
+  pinch: false, fist: false, here: false, seen: -9, x: 0, y: 0, rx: 0, ry: 0, px: 0, py: 0, speed: 0, ratio: 1, lm: null });
+const hands = { Left: makeHand(), Right: makeHand() };
+const scr = (p) => toScreen(p.x, p.y, video.videoWidth, video.videoHeight, W, H, mirror);
+const ndcOf = (s) => [(s.x / W) * 2 - 1, -(s.y / H) * 2 + 1];
+const byX = (p, kx = "x") => (p[0][kx] <= p[1][kx] ? [p[0], p[1]] : [p[1], p[0]]);
+
+// ---------------------------------------------------------------- gestures
+// IDLE | DRAW | ERASE | ORBIT (fist) | TWO (two pinches = zoom) | CLICK (pinch on a button)
+// expert only: HOLD (two open hands) | SIZE (thumb-index gap)
+let gesture = "IDLE", pending = null, pendCount = 0, lockout = 0, holdT = 0, fistT = 0, curPlane = 2;
+let needRelease = false, eraseIdle = 0, attractOn = false, lastHand = 0, orbitAccum = 0, farT = 0, nearT = 0, endedAt = -1e9;
+
+function latch(raw, c) {
+  if ((raw === "DRAW" || raw === "ERASE") && tNow < lockout) raw = "IDLE";
+  if (raw === gesture) { pending = null; pendCount = 0; return; }
+  if (raw === pending) pendCount++; else { pending = raw; pendCount = 1; }
+  if (pendCount >= (raw === "IDLE" ? 4 : 2)) {
+    endGesture();
+    gesture = raw; pending = null; pendCount = 0;
+    beginGesture(c);
+  }
+}
+function resetGesture() { endGesture(); gesture = "IDLE"; pending = null; pendCount = 0; holdT = 0; fistT = 0; }
+
+function beginGesture(c) {
+  if (gesture === "DRAW") beginDraw(c.pinchers[0]);
+  else if (gesture === "ERASE") beginErase();
+  else if (gesture === "ORBIT") { orbitPrev = null; clearAids(); }
+  else if (gesture === "TWO") { beginTwo(c.pinchers); clearAids(); }
+  else if (gesture === "HOLD") { beginHold(c.present); clearAids(); }
+  else if (gesture === "SIZE") { sizeBase = null; sizeN = 0; clearAids(); }
+  else if (gesture === "CLICK") { needRelease = true; clearAids(); airPress(hotEl); }
+}
+function endGesture() {
+  if (gesture === "DRAW" || gesture === "ERASE") {
+    if (stroke.obj) stroke.obj.finish();                  // a 1-cell stroke still counts
+    world.endStroke(); clearAids();
+  }
+  if (["TWO", "ORBIT", "HOLD", "SIZE", "CLICK"].includes(gesture)) lockout = tNow + 0.35;
+}
+function clearAids() { world.setGhost(null); world.hidePlane(); }
+
+// ---- air-click: pinching while the cursor is over a big button presses it (instead of drawing)
+let hotEl = null;
+function setHot(el) {
+  if (hotEl === el) return;
+  if (hotEl) hotEl.classList.remove("hot");
+  hotEl = el;
+  if (el) el.classList.add("hot");
+}
+function airTarget(s) {
+  const el = document.elementFromPoint(s.x, s.y);
+  return el ? el.closest("[data-air]") : null;
+}
+function airPress(el) {
+  if (!el) return;
+  el.click();
+  el.classList.add("pressed");
+  setTimeout(() => el.classList.remove("pressed"), 220);
+  beep("click", cfg.sound);
+}
+
+// ---- draw: pinch, then drag. Works inside ONE grid plane at a time, so x / y / z stay readable.
+//   - started on a cube face -> builds on that face, in that face's plane
+//   - started in the air     -> the plane that faces you most (or the plane chosen in settings)
+//   - straight-line assist: wobble is ignored, clear sideways moves make corners, moving back shortens
+const stroke = { obj: null, dead: true, axis: 2, layer: 0, snap: [null, null, null], last: null };
+
+function drawStart(nx, ny) {
+  const hit = world.pick(nx, ny);
+  let axis, start;
+  if (hit) {
+    start = [hit.cell[0] + hit.normal[0], hit.cell[1] + hit.normal[1], hit.cell[2] + hit.normal[2]];
+    axis = cfg.plane === "auto" ? hit.normal.findIndex((v) => v !== 0) : PLANE_AXIS[cfg.plane];
+  } else {
+    axis = cfg.plane === "auto" ? world.autoAxis(nx, ny) : PLANE_AXIS[cfg.plane];
+    const layer = Math.round(world.pivotCell()[axis]);
+    const f = world.planeHit(nx, ny, axis, layer);
+    if (!f) return null;
+    start = f.map(Math.round);
+    start[axis] = layer;
+  }
+  curPlane = axis;
+  return { axis, start };
+}
+
+function beginDraw(s) {
+  world.beginStroke();
+  stroke.dead = true; stroke.obj = null;
+  const [nx, ny] = ndcOf(s);
+  const st = drawStart(nx, ny);
+  if (!st) return;
+  stroke.dead = false; stroke.axis = st.axis; stroke.layer = st.start[st.axis];
+  stroke.snap = [null, null, null]; stroke.last = st.start;
+  if (cfg.assist) stroke.obj = new AxisStroke(world, st.axis, st.start);
+  else world.add(st.start[0], st.start[1], st.start[2]);
+  world.setGhost(st.start, CYAN); world.showPlane(st.axis, st.start);
+}
+
+const cellPx = () => world.getScale() * H / 9.326;       // on-screen size of one cell, in px
+const turnTol = () => Math.max(1.5, 45 / cellPx());      // sideways drift (cells) tolerated on a straight line
+
+function doDraw(s) {
+  if (stroke.dead) return;
+  const [nx, ny] = ndcOf(s);
+  const f = world.planeHit(nx, ny, stroke.axis, stroke.layer);
+  if (!f) return;
+  let end;
+  if (stroke.obj) { stroke.obj.update(f, turnTol()); end = stroke.obj.last; }
+  else {                                                  // assist off: free hand, still plane-bound
+    const c = [0, 0, 0];
+    for (let a = 0; a < 3; a++) c[a] = a === stroke.axis ? stroke.layer : (stroke.snap[a] = snapHyst(stroke.snap[a], f[a]));
+    const p = stroke.last;
+    const n = Math.min(200, Math.max(Math.abs(c[0] - p[0]), Math.abs(c[1] - p[1]), Math.abs(c[2] - p[2])));
+    for (let i = 1; i <= n; i++) {
+      const t = i / n;
+      world.add(Math.round(p[0] + (c[0] - p[0]) * t), Math.round(p[1] + (c[1] - p[1]) * t), Math.round(p[2] + (c[2] - p[2]) * t));
+    }
+    stroke.last = c; end = c;
+  }
+  world.setGhost(end, CYAN); world.showPlane(stroke.axis, end);
+}
+
+// ---- erase: pinch over a cube (front-most one under the cursor)
+const er = { t: 0, x: 0, y: 0 };
+function beginErase() { world.beginStroke(); stroke.obj = null; er.t = 0; er.x = er.y = -1e9; world.hidePlane(); }
+function doErase(s) {
+  const [nx, ny] = ndcOf(s);
+  const hit = world.pick(nx, ny);
+  world.setGhost(hit ? hit.cell : null, RED);
+  if (!hit) return;
+  const now = performance.now();
+  if (now - er.t > 450 || Math.hypot(s.x - er.x, s.y - er.y) > 0.02 * H) {
+    world.remove(hit.cell[0], hit.cell[1], hit.cell[2]);
+    er.t = now; er.x = s.x; er.y = s.y;
+  }
+}
+
+// ---- orbit: one closed fist (held ~0.2 s), move the hand
+let orbitPrev = null;
+function doOrbit(s) {
+  if (orbitPrev) {
+    const dx = (s.px - orbitPrev.x) / H, dy = (s.py - orbitPrev.y) / H;
+    world.rotate(AX.y, dx * cfg.rotSpeed);
+    world.rotate(AX.x, dy * cfg.rotSpeed);
+    orbitAccum += Math.hypot(dx, dy) * cfg.rotSpeed;
+  }
+  orbitPrev = { x: s.px, y: s.py };
+}
+
+// ---- two pinching hands: bigger gap = bigger model, smaller gap = smaller model
+const two = { dist: 1, s0: 0.5, engaged: false };
+function beginTwo(p) {
+  const [a, b] = byX(p);
+  Object.assign(two, { dist: Math.hypot(b.x - a.x, b.y - a.y) || 1, s0: world.getScale(), engaged: false });
+}
+function doTwo(p) {
+  const [a, b] = byX(p);
+  const dist = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  if (!two.engaged) {                                     // tiny 4 % dead zone, then follow exactly
+    if (Math.abs(Math.log(dist / two.dist)) > 0.04) {
+      two.engaged = true; two.dist = dist; two.s0 = world.getScale();
+      coachDone(2);
+    }
+    return;
+  }
+  world.setScale(two.s0 * (dist / two.dist));
+}
+
+// ---- EXPERT: two OPEN hands, held still for a moment: "hold the model", then turn it
+const hold = { ang: 0, mx: 0, my: 0 };
+function beginHold(p) {
+  const [a, b] = byX(p, "px");
+  Object.assign(hold, { ang: Math.atan2(b.py - a.py, b.px - a.px), mx: (a.px + b.px) / 2, my: (a.py + b.py) / 2 });
+}
+function doHold(p) {
+  const [a, b] = byX(p, "px");
+  const dx = b.px - a.px, dy = b.py - a.py, d = Math.hypot(dx, dy) || 1, ux = dx / d, uy = dy / d;
+  const ang = Math.atan2(dy, dx), mx = (a.px + b.px) / 2, my = (a.py + b.py) / 2;
+  const dAng = soft(wrapHalfPi(ang - hold.ang), 0.004);
+  const par = soft(((mx - hold.mx) * ux + (my - hold.my) * uy) / H, 0.0006);
+  const perp = soft(((mx - hold.mx) * -uy + (my - hold.my) * ux) / H, 0.0006);
+  const k = cfg.rotSpeed * 1.5;
+  if (dAng) world.rotate(AX.z, -dAng);
+  if (perp) { axisV.set(ux, -uy, 0); world.rotate(axisV, perp * k); }
+  if (par) { axisV.set(-uy, -ux, 0); world.rotate(axisV, -par * k); }
+  Object.assign(hold, { ang, mx, my });
+}
+
+// ---- EXPERT, SIZE mode (button): one hand, thumb-to-index gap = size of the model
+let sizeBase = null, sizeN = 0;
+function doSize(s) {
+  if (!sizeBase) { if (++sizeN >= 4) sizeBase = { r0: Math.max(s.ratio, 0.15), s0: world.getScale() }; return; }
+  const r = Math.min(1.8, Math.max(0.15, s.ratio));
+  world.setScale(sizeBase.s0 * (r / sizeBase.r0));
+}
+
+// ---- hover preview (nothing pinched): shows where a cube would go + the plane it would be on
+function hover(present) {
+  const s = present.find((p) => !p.fist);
+  if (!s || hotEl) { clearAids(); return; }
+  const [nx, ny] = ndcOf(s);
+  if (cfg.mode === "erase") {
+    const hit = world.pick(nx, ny);
+    world.setGhost(hit ? hit.cell : null, RED); world.hidePlane();
+    return;
+  }
+  const st = drawStart(nx, ny);
+  if (!st) { clearAids(); return; }
+  world.setGhost(st.start, 0xffffff); world.showPlane(st.axis, st.start);
+}
+
+// ---------------------------------------------------------------- visitor coaching ("teach by success")
+const coach = { show: false, step: 0, flash: 0, base: 0 };
+function coachStart() { coach.show = !cfg.expert; coach.step = 0; coach.flash = 0; coach.base = world.count; }
+function coachDone(step) {
+  if (!coach.show || coach.step !== step) return;
+  beep("ok", cfg.sound);
+  coach.step++; coach.flash = tNow + 1.4;
+}
+function updateCoach(t) {
+  const el = $("coach");
+  if (!coach.show) { el.classList.add("hidden"); return; }
+  const flashing = t < coach.flash;
+  if (coach.step >= 3 && !flashing) { coach.show = false; el.classList.add("hidden"); return; }
+  setText("coachText", flashing ? "✓ " + T.ok : T.coach[Math.min(coach.step, 2)]);
+  setText("coachDots", [0, 1, 2].map((i) => (i < coach.step ? "●" : i === coach.step ? "◉" : "○")).join(" "));
+  el.classList.remove("hidden");
+  el.classList.toggle("ok", flashing);
+}
+
+// a visitor who comes back within 12 s keeps their drawing; a NEW visitor gets a clean scene and the friendly start view
+function onSessionStart(t) {
+  orbitAccum = 0;
+  if (t - endedAt > 12) { resetGesture(); world.clear(); }
+  coachStart();
+}
+function onSessionEnd(t) { endedAt = t; coach.show = false; needRelease = false; setHot(null); setMode("draw"); }
+
+// ---------------------------------------------------------------- per-frame
+function step(found, t) {
+  const dt = prevT ? Math.min(t - prevT, 0.1) : 0.033;
+  prevT = t;
+
+  // 1) whose hands count? the visitor's (biggest / closest); people behind are ignored
+  const tooFar = found.length > 0 && found.every((h) => h.size < 0.08);
+  const sess = session.update(found, t);
+  found = sess.hands;
+  if (found.length === 2 && found[0].label === found[1].label) { found[0].label = "Left"; found[1].label = "Right"; }
+  if (sess.started) onSessionStart(t);
+  if (sess.ended) onSessionEnd(t);
+
+  // 2) smooth the visitor's hands; the cursor travels `reach` times further than the real hand
+  for (const k in hands) hands[k].here = false;
+  for (const h of found) {
+    const s = hands[h.label] || hands.Left;
+    const fresh = t - s.seen > 0.4;
+    if (fresh) { s.fx.reset(); s.fy.reset(); s.fpx.reset(); s.fpy.reset(); s.fr.reset(); s.pinch = false; s.speed = 0; }
+    const ox = s.px, oy = s.py;
+    s.seen = t; s.here = true; s.lm = h.lm;
+    const a = scr(h.pinch), b = scr(h.palm);
+    const gx = Math.min(W, Math.max(0, W / 2 + (a.x - W / 2) * cfg.reach));
+    const gy = Math.min(H, Math.max(0, H / 2 + (a.y - H / 2) * cfg.reach));
+    s.rx = a.x; s.ry = a.y;
+    s.x = s.fx.filter(gx / H, t) * H;  s.y = s.fy.filter(gy / H, t) * H;
+    s.px = s.fpx.filter(b.x / H, t) * H; s.py = s.fpy.filter(b.y / H, t) * H;
+    s.ratio = s.fr.filter(h.pinchRatio, t);
+    const inst = fresh ? 0 : Math.hypot(s.px - ox, s.py - oy) / dt / H;       // palm speed, screen-heights / s
+    s.speed = 0.6 * s.speed + 0.4 * inst;
+    s.pinch = s.pinch ? h.pinchRatio < cfg.pinchOn * 1.5 : h.pinchRatio < cfg.pinchOn;
+    s.fist = !s.pinch && h.fist;
+  }
+  const present = Object.values(hands).filter((s) => s.here);
+  const c = { present, pinchers: present.filter((s) => s.pinch), fists: present.filter((s) => s.fist) };
+  if (present.length) lastHand = t;
+  const expert = cfg.expert;
+
+  // 3) EXPERT: two open hands held still ~0.45 s -> HOLD
+  const open2 = expert && present.length === 2 && present.every((s) => !s.pinch && !s.fist);
+  if (open2) {
+    const calm = present.every((s) => s.speed < 0.35);
+    if (gesture === "HOLD") holdT = 1;
+    else if (calm && gesture === "IDLE") holdT = Math.min(1, holdT + dt / 0.45);
+    else holdT = Math.max(0, holdT - dt / 0.2);
+  } else holdT = 0;
+
+  // 4) a fist must be held ~0.2 s before it turns the model (a relaxed hand never spins it by accident)
+  if (c.fists.length && !c.pinchers.length) fistT += dt; else fistT = 0;
+
+  // 5) air-click target under the cursor
+  const ptr = c.pinchers[0] || present.find((p) => !p.fist) || null;
+  setHot(ptr && gesture !== "DRAW" && gesture !== "ERASE" ? airTarget(ptr) : null);
+
+  let raw = "IDLE";
+  if (c.pinchers.length === 2) raw = "TWO";
+  else if (expert && open2 && holdT >= 1) raw = "HOLD";
+  else if (hotEl && c.pinchers.length === 1 && !needRelease) raw = "CLICK";   // one press per pinch
+  else if (expert && cfg.mode === "size" && !c.fists.length && present.length) raw = "SIZE";
+  else if (c.pinchers.length === 1) raw = cfg.mode === "erase" ? "ERASE" : "DRAW";
+  else if (c.fists.length && (gesture === "ORBIT" || fistT >= 0.2)) raw = "ORBIT";
+  if (needRelease) {                                       // after a button press, let go before drawing again
+    if (!c.pinchers.length) needRelease = false;
+    else if (raw === "DRAW" || raw === "ERASE") raw = "IDLE";
+  }
+  latch(raw, c);
+
+  if (gesture === "DRAW") { if (c.pinchers.length === 1) doDraw(c.pinchers[0]); }
+  else if (gesture === "ERASE") { if (c.pinchers.length === 1) doErase(c.pinchers[0]); }
+  else if (gesture === "ORBIT") { if (c.fists.length) doOrbit(c.fists[0]); }
+  else if (gesture === "TWO") { if (c.pinchers.length === 2) doTwo(c.pinchers); }
+  else if (gesture === "HOLD") { if (present.length === 2) doHold(present); }
+  else if (gesture === "SIZE") { const s = present.find((p) => !p.fist); if (s) doSize(s); }
+  else if (gesture !== "CLICK") hover(present);
+
+  // 6) erase is a temporary tool: back to drawing after a while without pinching
+  if (cfg.mode === "erase") {
+    if (c.pinchers.length) eraseIdle = 0;
+    else if ((eraseIdle += dt) > ERASE_TIMEOUT) { setMode("draw"); toast(T.backDraw); }
+  }
+
+  // 7) coaching
+  if (coach.show && coach.step === 0 && world.count >= coach.base + 2) coachDone(0);
+  if (coach.show && coach.step === 1 && orbitAccum > 0.35) coachDone(1);
+  updateCoach(t);
+
+  // 8) distance advice (too far / too close), only while it persists
+  const size = found.length ? session.size : 0;
+  const far = (!found.length && tooFar) || (size > 0 && size < 0.10);
+  farT = far ? farT + dt : 0;
+  nearT = size > 0.40 ? nearT + dt : 0;
+  const advice = farT > 1 ? T.closer : nearT > 1 ? T.back : "";
+  setText("dist", advice); $("dist").classList.toggle("hidden", !advice);
+
+  // 9) kiosk behaviour: attract animation when nobody is there, auto-clear for the next visitor
+  const idle = t - lastHand;
+  attractOn = !expert && !session.active && idle > 3;
+  $("attract").classList.toggle("hidden", !attractOn);
+  const showHint = expert ? idle > 1.5 && !present.length : session.active && !present.length && idle > 1.5;
+  $("hint").classList.toggle("hidden", !showHint);
+  if (attractOn && idle > 12) world.rotate(AX.y, dt * 0.3);   // the last drawing turns slowly (as a showpiece)
+  if (cfg.idleSec > 0 && idle > cfg.idleSec && !session.active && (world.count > 0 || world.getScale() !== 0.5)) {
+    resetGesture(); world.clear(); lastHand = t; toast(T.cleared);
+  }
+
+  drawOverlay(c);
+  updateHud(present.length);
+}
+
+// ---------------------------------------------------------------- overlay
+function tag(text, x, y) {                                    // small label under a cursor
+  octx.font = "bold 14px system-ui, sans-serif";
+  octx.direction = cfg.lang === "ar" ? "rtl" : "ltr";
+  const w = octx.measureText(text).width + 16;
+  octx.fillStyle = "rgba(0,0,0,.62)";
+  octx.beginPath();
+  if (octx.roundRect) octx.roundRect(x - w / 2, y, w, 24, 9); else octx.rect(x - w / 2, y, w, 24);
+  octx.fill();
+  octx.fillStyle = "#fff"; octx.textAlign = "center"; octx.textBaseline = "middle";
+  octx.fillText(text, x, y + 13);
+}
+
+function drawOverlay(c) {
+  octx.clearRect(0, 0, W, H);
+  for (const s of c.present) {
+    const ox = s.x - s.rx, oy = s.y - s.ry;                 // the drawn hand follows the (longer-reaching) cursor
+    octx.fillStyle = cfg.expert ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0.35)";
+    for (const p of s.lm) {
+      const q = scr(p);
+      octx.beginPath(); octx.arc(q.x + ox, q.y + oy, 2.2, 0, Math.PI * 2); octx.fill();
+    }
+    octx.lineWidth = 3;
+    octx.strokeStyle = s.pinch ? (cfg.mode === "erase" ? "#ff4040" : "#19e6cf") : s.fist ? "#ffb020" : "#ffffff";
+    octx.beginPath(); octx.arc(s.x, s.y, s.pinch ? 11 : 18, 0, Math.PI * 2); octx.stroke();
+    const label = gesture === "DRAW" && s.pinch ? T.draw : gesture === "ERASE" && s.pinch ? T.erase
+      : gesture === "TWO" && s.pinch ? T.zoom : gesture === "ORBIT" && s.fist ? T.spin : "";
+    if (label) tag(label, s.x, s.y + 24);
+  }
+  if (c.present.length === 2) {                             // the white line between the hands
+    const active = gesture === "TWO" || gesture === "HOLD";
+    const useP = gesture === "HOLD" || holdT > 0;
+    const [a, b] = byX(c.present, useP ? "px" : "x");
+    const ax = useP ? a.px : a.x, ay = useP ? a.py : a.y, bx = useP ? b.px : b.x, by = useP ? b.py : b.y;
+    const dx = bx - ax, dy = by - ay, d = Math.hypot(dx, dy) || 1, e = d * 0.6;
+    octx.strokeStyle = active ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.3)";
+    octx.lineWidth = active ? 3 : 1.5;
+    octx.setLineDash(active ? [] : [6, 8]);
+    octx.beginPath();
+    octx.moveTo(ax - (dx / d) * e, ay - (dy / d) * e);
+    octx.lineTo(bx + (dx / d) * e, by + (dy / d) * e);
+    octx.stroke();
+    octx.setLineDash([]);
+    if (holdT > 0 && holdT < 1) {                           // "keep still" progress ring
+      octx.strokeStyle = "#19e6cf"; octx.lineWidth = 5;
+      octx.beginPath();
+      octx.arc((ax + bx) / 2, (ay + by) / 2, 26, -Math.PI / 2, -Math.PI / 2 + holdT * Math.PI * 2);
+      octx.stroke();
+    }
+  }
+  if (gesture === "SIZE") {                                 // thumb–index gap = size
+    const s = c.present.find((p) => !p.fist);
+    if (s) {
+      const p4 = scr(s.lm[4]), p8 = scr(s.lm[8]);
+      octx.strokeStyle = "#19e6cf"; octx.lineWidth = 4;
+      octx.beginPath(); octx.moveTo(p4.x, p4.y); octx.lineTo(p8.x, p8.y); octx.stroke();
+      octx.fillStyle = "#fff"; octx.font = "bold 16px sans-serif";
+      octx.fillText(Math.round((world.getScale() / 0.5) * 100) + "%", (p4.x + p8.x) / 2 + 10, (p4.y + p8.y) / 2 - 10);
+    }
+  }
+}
+
+// attract mode: a ghost hand shows the three gestures (drawn every display frame, not only per tracking frame)
+function drawAttract(now) {
+  const f = attractFrame(now, W, H);
+  setText("attractTitle", T.attractTitle);
+  setText("attractCap", T.attract[f.scene]);
+  octx.clearRect(0, 0, W, H);
+  if (f.arc) {
+    octx.strokeStyle = "rgba(25,230,207,.85)"; octx.lineWidth = 6; octx.lineCap = "round";
+    octx.beginPath(); octx.arc(f.arc.x, f.arc.y, f.arc.r, f.arc.a0, f.arc.a1); octx.stroke();
+  }
+  const tips = f.hands.map((h) => ghostHand(octx, h.x, h.y, f.S, h.pose, h.amt));
+  if (f.line) {
+    octx.strokeStyle = "rgba(255,255,255,.9)"; octx.lineWidth = 3;
+    octx.beginPath(); octx.moveTo(tips[0].x - f.S, tips[0].y); octx.lineTo(tips[1].x + f.S, tips[1].y); octx.stroke();
+  }
+  if (f.trail.length) {
+    const off = tips[0].x - f.hands[0].x, q = f.S * 0.34;
+    octx.fillStyle = "rgba(25,230,207,.75)"; octx.strokeStyle = "#07443d"; octx.lineWidth = 2;
+    for (const p of f.trail) { octx.fillRect(p.x + off - q / 2, tips[0].y - q / 2, q, q); octx.strokeRect(p.x + off - q / 2, tips[0].y - q / 2, q, q); }
+  }
+  tips.forEach((tp, i) => {
+    if (f.hands[i].pose === "pinch") { octx.strokeStyle = "#19e6cf"; octx.lineWidth = 4; octx.beginPath(); octx.arc(tp.x, tp.y, 14, 0, Math.PI * 2); octx.stroke(); }
+  });
+}
+
+const NAMES = { IDLE: "READY", DRAW: "DRAWING", ERASE: "ERASING", ORBIT: "SPIN ✊", TWO: "ZOOM 🤏🤏", HOLD: "HOLD & TURN 🙌", SIZE: "SIZE", CLICK: "BUTTON" };
+let frames = 0, fpsT = performance.now();
+const shown = {};
+function setText(id, v) { v = String(v); if (shown[id] !== v) { shown[id] = v; $(id).textContent = v; } }
+function updateHud(n) {
+  let g = NAMES[gesture];
+  if (gesture === "SIZE") g += " " + Math.round((world.getScale() / 0.5) * 100) + "%";
+  else if (gesture === "IDLE" && holdT > 0) g = "KEEP STILL…";
+  setText("gesture", g);
+  setText("hands", n);
+  setText("count", world.count);
+  setText("plane", PLANE_NAME[curPlane] + (cfg.plane === "auto" ? " auto" : ""));
+  frames++;
+  const now = performance.now();
+  if (now - fpsT > 1000) { setText("fps", frames); frames = 0; fpsT = now; }
+}
+let toastTimer = 0;
+function toast(msg) {
+  const el = $("toast"); el.textContent = msg; el.classList.remove("hidden");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.add("hidden"), 2400);
+}
+
+// ---------------------------------------------------------------- loop
+let lastVT = -1, lastInfer = 0, lastFrame = performance.now();
+function loop() {
+  requestAnimationFrame(loop);
+  const now = performance.now();
+  const dt = Math.min((now - lastFrame) / 1000, 0.1);
+  lastFrame = now;
+  world.update(dt);                                   // ease the model toward its target pose
+  if (tracker && video.readyState >= 2 && video.videoWidth &&
+      video.currentTime !== lastVT && now - lastInfer >= cfg.minInterval) {
+    lastVT = video.currentTime;
+    lastInfer = now;
+    tNow = now / 1000;
+    try {
+      const found = detectHands(tracker, video, now);
+      step(found, tNow);
+    } catch (e) { console.error(e); }
+  }
+  if (attractOn) drawAttract(now / 1000);
+  world.render();
+}
+
+// ---------------------------------------------------------------- UI
+function resize() {
+  W = innerWidth; H = innerHeight;
+  overlay.width = W; overlay.height = H;               // overlay stays at 1x: cheap
+  world.resize(W, H);
+}
+addEventListener("resize", resize);
+resize();
+
+function setMode(m) {
+  cfg.mode = m;
+  for (const [id, name] of [["btnDraw", "draw"], ["btnErase", "erase"], ["btnSize", "size"]]) $(id).classList.toggle("active", m === name);
+  document.body.classList.toggle("erasing", m === "erase");
+  eraseIdle = 0;
+  resetGesture();
+}
+function applyLang() {
+  T = makeT(cfg.lang);
+  document.querySelectorAll("[data-i18n]").forEach((el) => { if (T[el.dataset.i18n] !== undefined) el.textContent = T[el.dataset.i18n]; });
+  document.querySelectorAll("[data-dir]").forEach((el) => { el.dir = cfg.lang === "ar" ? "rtl" : "ltr"; });
+  document.querySelectorAll("#langRow button").forEach((b) => b.classList.toggle("active", b.dataset.lang === cfg.lang));
+  $("selLang").value = cfg.lang;
+  disarmNew();
+}
+function applyMode() {
+  document.body.classList.toggle("expert", cfg.expert);
+  if (!cfg.expert && cfg.mode === "size") setMode("draw");
+  if (cfg.expert) coach.show = false;
+}
+
+// settings panel <-> cfg (saved after every change)
+[["selLang", "lang", "str", applyLang], ["selMode", "expert", "mode", applyMode],
+ ["sensPinch", "pinchOn", "num"], ["sensReach", "reach", "num"], ["sensRot", "rotSpeed", "num"],
+ ["selRate", "minInterval", "num"], ["selQuality", "quality", "num", () => world.setPixelRatio(cfg.quality)],
+ ["selPlane", "plane", "str"], ["chkAssist", "assist", "bool"], ["chkSound", "sound", "bool"], ["selIdle", "idleSec", "num"],
+].forEach(([id, key, type, fn]) => {
+  const el = $(id);
+  if (type === "bool") el.checked = cfg[key];
+  else if (type === "mode") el.value = cfg[key] ? "expert" : "exhibition";
+  else el.value = String(cfg[key]);
+  el.addEventListener(el.type === "range" ? "input" : "change", () => {
+    cfg[key] = type === "bool" ? el.checked : type === "num" ? +el.value : type === "mode" ? el.value === "expert" : el.value;
+    saveCfg();
+    if (fn) fn();
+  });
+});
+document.querySelectorAll("#langRow button").forEach((b) => { b.onclick = () => { cfg.lang = b.dataset.lang; saveCfg(); applyLang(); }; });
+
+$("btnDraw").onclick = () => setMode("draw");
+$("btnErase").onclick = () => setMode("erase");
+$("btnSize").onclick = () => setMode("size");
+$("btnUndo").onclick = () => { resetGesture(); world.undo(); };
+$("btnReset").onclick = () => { resetGesture(); world.resetView(); };
+$("btnHelp").onclick = () => $("help").classList.toggle("hidden");
+$("btnSettings").onclick = () => $("settings").classList.toggle("hidden");
+
+// NEW (clear everything) needs a second press within 3 s, so nobody wipes a drawing by accident
+let newTimer = 0;
+const newLabel = () => $("btnNew").querySelector(".lbl");
+function disarmNew() { clearTimeout(newTimer); $("btnNew").classList.remove("armed"); newLabel().textContent = T.bNew; }
+$("btnNew").onclick = () => {
+  if ($("btnNew").classList.contains("armed")) { disarmNew(); resetGesture(); world.clear(); beep("ok", cfg.sound); return; }
+  $("btnNew").classList.add("armed"); newLabel().textContent = T.sure;
+  clearTimeout(newTimer); newTimer = setTimeout(disarmNew, 3000);
+};
+
+// SNAPSHOT: camera picture + the 3D drawing, saved as a PNG (no buttons or text on it)
+$("btnShot").onclick = () => {
+  if (!video.videoWidth) return;
+  const c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  const s = Math.max(W / video.videoWidth, H / video.videoHeight), dw = video.videoWidth * s, dh = video.videoHeight * s;
+  g.save();
+  if (mirror) { g.translate(W, 0); g.scale(-1, 1); }
+  g.drawImage(video, (W - dw) / 2, (H - dh) / 2, dw, dh);
+  g.restore();
+  g.fillStyle = "rgba(0,0,0,.35)"; g.fillRect(0, 0, W, H);
+  world.render();                                       // fresh WebGL frame, then copy it
+  g.drawImage(world.canvas, 0, 0, W, H);
+  c.toBlob((blob) => {
+    if (!blob) return;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "my-voxel-drawing-" + Date.now() + ".png";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }, "image/png");
+  const fl = $("flash"); fl.classList.add("on"); setTimeout(() => fl.classList.remove("on"), 60);
+  beep("ok", cfg.sound); toast(T.saved);
+};
+
+async function openCamera() {
+  await startCamera(video, cfg.facing);
+  mirror = cfg.facing === "user";
+  video.classList.toggle("mirror", mirror);
+  lastVT = -1;
+}
+$("btnCam").onclick = async () => {
+  cfg.facing = cfg.facing === "user" ? "environment" : "user";
+  try { await openCamera(); } catch (e) { alert(e.message || e); }
+};
+
+async function keepAwake() { try { if (navigator.wakeLock) await navigator.wakeLock.request("screen"); } catch (_) {} }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && tracker) keepAwake(); });
+
+$("startBtn").onclick = async () => {
+  const msg = (t) => { $("loadMsg").textContent = t; };
+  $("startBtn").disabled = true;
+  unlockAudio();
+  try { if (document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen(); } catch (_) {}
+  try {
+    msg("Starting camera…");
+    await openCamera();
+    tracker = await createHandTracker(msg);
+    keepAwake();
+    $("startScreen").classList.add("hidden");
+    lastHand = performance.now() / 1000;
+  } catch (e) {
+    console.error(e);
+    msg("Error: " + (e.message || e));
+    $("startBtn").disabled = false;
+  }
+};
+
+world.setPixelRatio(cfg.quality);
+applyLang();
+applyMode();
+$("loadMsg").textContent = "Scripts loaded ✓";
+$("startBtn").disabled = false;
+loop();
+
+</script>
+</body>
+</html>
